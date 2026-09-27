@@ -42,7 +42,13 @@ func gitRepo(tb testing.TB) string {
 	run := func(args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		// GIT_CONFIG_GLOBAL/SYSTEM point at the null device so a developer's own
+		// git config cannot change what the fixture does. os.DevNull rather than
+		// "/dev/null", which is not a path on Windows and is silently ignored
+		// there -- leaving the global config (notably core.autocrlf) in effect.
+		cmd.Env = append(os.Environ(),
+			"GIT_CONFIG_GLOBAL="+os.DevNull,
+			"GIT_CONFIG_SYSTEM="+os.DevNull)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			tb.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -55,6 +61,10 @@ func gitRepo(tb testing.TB) string {
 	run("config", "user.email", "t@example.com")
 	run("config", "user.name", "T")
 	run("config", "commit.gpgsign", "false")
+	// Checkouts must reproduce the bytes the tests write. With the ambient
+	// core.autocrlf=true, git rewrites "two\n" to "two\r\n" in the worktree and
+	// every content assertion fails on a Windows developer machine.
+	run("config", "core.autocrlf", "false")
 	run("add", "-A")
 	run("commit", "-qm", "init")
 	// Dirty it: modify, stage a new file, leave one untracked, delete, rename.
@@ -263,7 +273,8 @@ func TestGitGutter(t *testing.T) {
 	run := func(args ...string) {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull,
+			"GIT_CONFIG_SYSTEM="+os.DevNull)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -275,6 +286,7 @@ func TestGitGutter(t *testing.T) {
 	run("config", "user.email", "t@example.com")
 	run("config", "user.name", "T")
 	run("config", "commit.gpgsign", "false")
+	run("config", "core.autocrlf", "false")
 	run("add", "-A")
 	run("commit", "-qm", "init")
 	// Dirty f.go: replace line 2 (modify), insert a line before echo (pure add),
@@ -520,7 +532,8 @@ func TestGitWatcherCLICommitDetection(t *testing.T) {
 	// Commit existing changes via CLI
 	cmd := exec.Command("git", "commit", "-am", "commit all")
 	cmd.Dir = root
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull,
+			"GIT_CONFIG_SYSTEM="+os.DevNull)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("git commit failed: %v\n%s", err, out)
 	}
@@ -542,7 +555,8 @@ func TestGitStatusAgainstAndPRDiff(t *testing.T) {
 	run := func(args ...string) string {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull,
+			"GIT_CONFIG_SYSTEM="+os.DevNull)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -562,6 +576,7 @@ func TestGitStatusAgainstAndPRDiff(t *testing.T) {
 	run("config", "user.email", "t@example.com")
 	run("config", "user.name", "T")
 	run("config", "commit.gpgsign", "false")
+	run("config", "core.autocrlf", "false")
 	run("add", "-A")
 	run("commit", "-m", "initial commit")
 	baseSHA := run("rev-parse", "HEAD")
@@ -662,7 +677,8 @@ func TestHandleDiffPRSplitsPRAndYourChanges(t *testing.T) {
 	run := func(args ...string) string {
 		cmd := exec.Command("git", args...)
 		cmd.Dir = root
-		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull,
+			"GIT_CONFIG_SYSTEM="+os.DevNull)
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -680,6 +696,7 @@ func TestHandleDiffPRSplitsPRAndYourChanges(t *testing.T) {
 	run("config", "user.email", "t@example.com")
 	run("config", "user.name", "T")
 	run("config", "commit.gpgsign", "false")
+	run("config", "core.autocrlf", "false")
 	run("add", "-A")
 	run("commit", "-m", "initial commit")
 	mergeBase := run("rev-parse", "HEAD")
@@ -729,7 +746,12 @@ func TestHandleDiffPRSplitsPRAndYourChanges(t *testing.T) {
 	// report was about. prDiff must stay byte-for-byte frozen; yourDiff must
 	// pick up exactly the reviewer's commit, and only that.
 	write("foo.go", "package main\n\nfunc Foo() int { return 99 }\n")
-	run("commit", "-am", "reviewer's local commit")
+	// -am with a message containing an apostrophe only works where the shell is
+	// not involved and the message is passed as one argv entry, which is the case
+	// here; on Windows git rejects it because of the quoting difference between
+	// how the test passes the message and how git re-reads it. An apostrophe-free
+	// message keeps the test's intent (a local commit by the reviewer) intact.
+	run("commit", "-am", "reviewer local commit")
 
 	resp2 := getDiff()
 	prDiff2, _ := resp2["prDiff"].(string)
@@ -807,7 +829,8 @@ func gitTestRun(tb testing.TB, dir string, args ...string) string {
 	tb.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_SYSTEM=/dev/null")
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL="+os.DevNull,
+			"GIT_CONFIG_SYSTEM="+os.DevNull)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		tb.Fatalf("git %v (in %s): %v\n%s", args, dir, err, out)
@@ -837,7 +860,7 @@ func TestGitFFOnlyPull(t *testing.T) {
 	gitTestRun(t, remote, "init", "--bare", "-b", "main")
 
 	gitTestRun(t, base, "clone", remote, "a")
-	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}, {"core.autocrlf", "false"}} {
 		gitTestRun(t, cloneA, "config", cfg[0], cfg[1])
 	}
 	if err := os.WriteFile(filepath.Join(cloneA, "f.txt"), []byte("one\n"), 0o644); err != nil {
@@ -848,7 +871,7 @@ func TestGitFFOnlyPull(t *testing.T) {
 	gitTestRun(t, cloneA, "push", "origin", "main")
 
 	gitTestRun(t, base, "clone", remote, "b")
-	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}, {"core.autocrlf", "false"}} {
 		gitTestRun(t, cloneB, "config", cfg[0], cfg[1])
 	}
 
@@ -892,7 +915,7 @@ func TestGitFFOnlyPull(t *testing.T) {
 func TestGitRecentCommitsAndLog(t *testing.T) {
 	dir := t.TempDir()
 	gitTestRun(t, dir, "init", "-b", "main")
-	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}, {"core.autocrlf", "false"}} {
 		gitTestRun(t, dir, "config", cfg[0], cfg[1])
 	}
 
@@ -1104,7 +1127,7 @@ func TestGitStagedFilesStatAndDiff(t *testing.T) {
 	}
 	dir := t.TempDir()
 	gitTestRun(t, dir, "init", "-b", "main")
-	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}, {"core.autocrlf", "false"}} {
 		gitTestRun(t, dir, "config", cfg[0], cfg[1])
 	}
 	// Initial commit
@@ -1163,7 +1186,7 @@ func TestGitStagedDiffTruncation(t *testing.T) {
 	}
 	dir := t.TempDir()
 	gitTestRun(t, dir, "init", "-b", "main")
-	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}} {
+	for _, cfg := range [][2]string{{"user.email", "t@example.com"}, {"user.name", "T"}, {"commit.gpgsign", "false"}, {"core.autocrlf", "false"}} {
 		gitTestRun(t, dir, "config", cfg[0], cfg[1])
 	}
 	os.WriteFile(filepath.Join(dir, "init.txt"), []byte("init\n"), 0o644)

@@ -19,6 +19,10 @@ Thumbs.db
 # Build artifacts
 build/
 web/app.js
+# The Windows build of the same binary as `px0` above. Without this a local
+# `go build` on Windows leaves px0.exe untracked and it gets committed by
+# accident.
+px0.exe
 
 # Logs
 *.log
