@@ -144,35 +144,147 @@ func TestBuildArgvDropsEveryPromptToken(t *testing.T) {
 
 // TestEveryStdinPresetStaysAValidCommand guards the preset table: a harness
 // marked PromptStdin must still be the same command once {prompt} is removed.
-func TestEveryStdinPresetStaysAValidCommand(t *testing.T) {
+// stdinVerified is the set of harnesses whose own documentation states that a
+// prompt may be supplied on stdin, each confirmed by running it and watching it
+// get as far as model resolution with nothing on argv.
+//
+// It exists so that a preset cannot quietly stop feeding its prompt on stdin.
+// The plumbing tests below all iterate the presets that opted in, which means
+// they pass on an empty set -- and an empty set is exactly what a bad merge or
+// a dropped field line looks like. That regression shipped once: the field and
+// every line of plumbing survived, and no preset set it, so every harness
+// silently fell back to argv and the Windows command-line ceiling came back.
+var stdinVerified = map[string]bool{
+	"claude":   true, // `claude -p` reads stdin; the canonical `cat f | claude -p`
+	"codex":    true, // codex exec: "instructions are read from stdin"
+	"opencode": true, // `opencode run [<message...>]`, message optional
+}
+
+func TestStdinVerifiedHarnessesAreOptedIn(t *testing.T) {
+	if len(stdinVerified) == 0 {
+		t.Fatal("stdinVerified is empty, so this test guards nothing")
+	}
+	for name := range stdinVerified {
+		p, ok := presetByName(name)
+		if !ok {
+			t.Errorf("stdinVerified names %q, which is not a known preset", name)
+			continue
+		}
+		if !p.PromptStdin {
+			t.Errorf("preset %s takes its prompt on stdin but does not set PromptStdin, "+
+				"so its prompts go through argv and inherit the OS command-line ceiling "+
+				"(8,191 characters behind a .cmd shim on Windows)", name)
+		}
+	}
+}
+
+// TestStdinOptInsAreVerified keeps the flag honest in the other direction: a
+// harness may only claim stdin if it was actually checked, because setting it
+// wrongly means the harness receives no prompt at all.
+func TestStdinOptInsAreVerified(t *testing.T) {
+	optedIn := 0
 	for _, p := range agentPresets {
 		if !p.PromptStdin {
 			continue
 		}
-		args := buildArgv(p.Args, "prompt", true)
-		if len(args) == 0 {
-			t.Errorf("preset %s: buildArgv produced no command at all", p.Name)
+		optedIn++
+		if !stdinVerified[p.Name] {
+			t.Errorf("preset %s sets PromptStdin but is not listed in stdinVerified; "+
+				"confirm the CLI reads a prompt from stdin before claiming it does", p.Name)
+		}
+	}
+	if optedIn == 0 {
+		t.Error("no preset feeds its prompt on stdin; every harness is back on argv")
+	}
+}
+
+func TestHarnessPromptStdinAgreesWithThePreset(t *testing.T) {
+	for _, p := range agentPresets {
+		if got := harnessPromptStdin(p.Name); got != p.PromptStdin {
+			t.Errorf("harnessPromptStdin(%q) = %v, but the preset says %v",
+				p.Name, got, p.PromptStdin)
+		}
+	}
+	// An unknown name must not be assumed to read stdin: px0 knows nothing about
+	// an arbitrary command template's stdin handling.
+	if harnessPromptStdin("not-a-preset") {
+		t.Error("harnessPromptStdin assumed an unknown command reads stdin")
+	}
+}
+
+// TestEveryStdinPresetStaysAValidCommand guards the preset table: a harness
+// marked PromptStdin must still be the same command once {prompt} is removed.
+//
+// This resolves through resolveAgentSpec rather than reading p.Args directly,
+// because the model flag is not in the template -- resolveAgentSpec inserts it
+// beside the prompt token. Asserting against the raw template checks a command
+// px0 never actually runs.
+func TestEveryStdinPresetStaysAValidCommand(t *testing.T) {
+	checked := 0
+	for _, p := range agentPresets {
+		if !p.PromptStdin {
 			continue
 		}
-		if args[0] != p.Args[0] {
-			t.Errorf("preset %s: buildArgv changed the binary to %q", p.Name, args[0])
+		checked++
+		_, resolved, model, stdin, err := resolveAgentSpec(p.Name, p.DefaultModel)
+		if err != nil {
+			// Not installed here, so resolveAgentSpec cannot build argv. Fall
+			// back to the template, minus the checks that need the model flag.
+			resolved, model, stdin = p.Args, "", p.PromptStdin
 		}
-		if p.ModelFlag != "" && p.DefaultModel != "" {
-			if !contains(args, p.ModelFlag) {
-				t.Errorf("preset %s: model flag %q lost when the prompt moved to stdin: %v",
-					p.Name, p.ModelFlag, args)
+		if !stdin {
+			t.Errorf("preset %s: resolveAgentSpec did not report stdin", p.Name)
+		}
+		// resolveAgentSpec deliberately leaves {prompt} in the template: what a
+		// run does with it depends on a prompt that does not exist yet.
+		// buildArgv is what removes it, so that is what this asserts on.
+		final := buildArgv(resolved, "the prompt", stdin)
+		if len(final) == 0 {
+			t.Errorf("preset %s: resolving produced no command at all", p.Name)
+			continue
+		}
+		// The resolved binary is an absolute path with a PATHEXT suffix, so
+		// compare the stem rather than the whole element.
+		if stem := strings.TrimSuffix(filepath.Base(final[0]), filepath.Ext(final[0])); stem != p.Args[0] {
+			t.Errorf("preset %s: buildArgv ran %q, want the harness %q", p.Name, final[0], p.Args[0])
+		}
+		for _, a := range final {
+			if a == "{prompt}" {
+				t.Errorf("preset %s: {prompt} survived into argv: %v", p.Name, final)
 			}
 		}
+		// The model flag is what the insertion logic is most likely to strand,
+		// since that logic keys off the position of the token being removed.
+		if p.ModelFlag != "" && model != "" {
+			idx := -1
+			for i, a := range final {
+				if a == p.ModelFlag {
+					idx = i
+				}
+			}
+			if idx < 0 {
+				t.Errorf("preset %s: model flag %q lost when the prompt moved to stdin: %v",
+					p.Name, p.ModelFlag, final)
+			} else if idx+1 >= len(final) || final[idx+1] != model {
+				t.Errorf("preset %s: model flag %q is followed by %q, want the model %q: %v",
+					p.Name, p.ModelFlag, final[idx+1], model, final)
+			}
+		}
+	}
+	if checked == 0 {
+		t.Error("no preset feeds its prompt on stdin, so this guards nothing")
 	}
 }
 
 // TestNonStdinPresetsKeepTheirPromptArg is the other half: a harness px0 has
 // not verified reads its prompt from argv, so that is where it has to stay.
 func TestNonStdinPresetsKeepTheirPromptArg(t *testing.T) {
+	checked := 0
 	for _, p := range agentPresets {
 		if p.PromptStdin {
 			continue
 		}
+		checked++
 		args := buildArgv(p.Args, "the prompt", false)
 		found := false
 		for _, a := range args {
@@ -183,6 +295,9 @@ func TestNonStdinPresetsKeepTheirPromptArg(t *testing.T) {
 		if !found {
 			t.Errorf("preset %s: prompt did not reach argv: %v", p.Name, args)
 		}
+	}
+	if checked == 0 {
+		t.Error("every preset feeds stdin, so nothing is covered by the argv budget")
 	}
 }
 

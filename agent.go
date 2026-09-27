@@ -106,6 +106,7 @@ var agentPresets = []agentPreset{
 		ModelFlag:    "--model",
 		DefaultModel: "haiku",
 		Models:       []string{"haiku", "sonnet", "opus"},
+		PromptStdin:  true,
 		Auth:         authOAuth,
 		CredFiles:    []string{".claude/.credentials.json"},
 		KeyProviders: []string{"anthropic"},
@@ -126,10 +127,11 @@ var agentPresets = []agentPreset{
 			"o3-mini",
 			"o1",
 		},
-		Auth:         authOAuth,
-		LoginArgs:    []string{"login"},
-		LogoutArgs:   []string{"logout"},
-		CredFiles:    []string{".codex/auth.json"},
+		PromptStdin: true,
+		Auth:        authOAuth,
+		LoginArgs:   []string{"login"},
+		LogoutArgs:  []string{"logout"},
+		CredFiles:   []string{".codex/auth.json"},
 		KeyProviders: []string{"openai"},
 	},
 	{
@@ -228,9 +230,10 @@ var agentPresets = []agentPreset{
 		// when this was last written, eight of its nine entries had already been
 		// retired by the provider, and one of them was the model that made a
 		// user's runs fail. Discovery is the only list that stays true.
-		Auth:      authBoth,
-		LoginArgs: []string{"auth", "login"},
-		CredFiles: []string{".local/share/opencode/auth.json"},
+		PromptStdin: true,
+		Auth:        authBoth,
+		LoginArgs:   []string{"auth", "login"},
+		CredFiles:   []string{".local/share/opencode/auth.json"},
 		KeyProviders: []string{
 			"anthropic", "openai", "google", "github",
 			"openrouter", "mistral", "deepseek", "ollama",
