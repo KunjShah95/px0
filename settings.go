@@ -35,10 +35,12 @@ type settings struct {
 	WorkbenchColorTheme         *string  `json:"workbench.colorTheme,omitempty"`
 	DiffEditorRenderSideBySide  *bool    `json:"diffEditor.renderSideBySide,omitempty"`
 	MarkdownPreviewOpen         *bool    `json:"markdown.preview.open,omitempty"`
+	TablePreviewOpen            *bool    `json:"table.preview.open,omitempty"`
 	TelemetryEnabled            *bool    `json:"telemetry.enabled,omitempty"`
 	GitHubToken                 *string  `json:"github.token,omitempty"`
 	GitCommitMessageInstruction *string  `json:"git.commitMessageInstruction,omitempty"`
 	ServerBasePath              *string  `json:"server.basePath,omitempty"`
+	ExplorerAutoReveal          *bool    `json:"explorer.autoReveal,omitempty"`
 }
 
 var settingsMu sync.Mutex
@@ -188,6 +190,14 @@ var settingsSchema = []settingSchemaItem{
 		Default:     true,
 	},
 	{
+		Key:         "table.preview.open",
+		Title:       "Table View",
+		Description: "Controls whether CSV and TSV files open as a table by default.",
+		Category:    "Workbench",
+		Type:        "boolean",
+		Default:     true,
+	},
+	{
 		Key:         "editor.cursorStyle",
 		Title:       "Cursor Style",
 		Description: "Controls the cursor style in the code viewer.",
@@ -248,7 +258,7 @@ var settingsSchema = []settingSchemaItem{
 	},
 	{
 		Key:         "explorer.autoReveal",
-		Title:       "Auto Reveal Active File",
+		Title:       "Auto Reveal",
 		Description: "Controls whether the file explorer automatically scrolls to and reveals active tabs.",
 		Category:    "Files & Explorer",
 		Type:        "boolean",
@@ -368,10 +378,11 @@ var settingsSchema = []settingSchemaItem{
 }
 
 func defaultSettingsMap() map[string]any {
-	res := make(map[string]any, len(settingsSchema)+2)
+	res := make(map[string]any, len(settingsSchema)+3)
 	for _, item := range settingsSchema {
 		res[item.Key] = item.Default
 	}
+	res["explorer.autoRelveal"] = true
 	res["agent"] = ""
 	res["models"] = map[string]string{}
 	return res
@@ -440,6 +451,18 @@ func readSettingsLocked() settings {
 			}
 		}
 	}
+	// Support explorer.autoReveal and explorer.autoRelveal
+	if s.ExplorerAutoReveal == nil {
+		if ar, ok := raw["explorer.autoReveal"].(bool); ok {
+			s.ExplorerAutoReveal = &ar
+		} else if ar, ok := raw["explorer.autoRelveal"].(bool); ok {
+			s.ExplorerAutoReveal = &ar
+		} else if ar, ok := raw["autoReveal"].(bool); ok {
+			s.ExplorerAutoReveal = &ar
+		} else if ar, ok := raw["autoRelveal"].(bool); ok {
+			s.ExplorerAutoReveal = &ar
+		}
+	}
 
 	return s
 }
@@ -475,6 +498,24 @@ func readMergedSettingsMap() map[string]any {
 		res["server.basePath"] = bp
 	} else if bp, ok := raw["basePath"].(string); ok && bp != "" {
 		res["server.basePath"] = bp
+	}
+
+	// Synchronize explorer.autoReveal / explorer.autoRelveal
+	if ar, ok := raw["explorer.autoReveal"].(bool); ok {
+		res["explorer.autoReveal"] = ar
+		res["explorer.autoRelveal"] = ar
+	} else if ar, ok := raw["explorer.autoRelveal"].(bool); ok {
+		res["explorer.autoReveal"] = ar
+		res["explorer.autoRelveal"] = ar
+	} else if ar, ok := raw["autoReveal"].(bool); ok {
+		res["explorer.autoReveal"] = ar
+		res["explorer.autoRelveal"] = ar
+	} else if ar, ok := raw["autoRelveal"].(bool); ok {
+		res["explorer.autoReveal"] = ar
+		res["explorer.autoRelveal"] = ar
+	} else {
+		res["explorer.autoReveal"] = true
+		res["explorer.autoRelveal"] = true
 	}
 
 	return res
@@ -629,6 +670,19 @@ func updateSettingsMap(updates map[string]any) error {
 			} else {
 				raw["server.basePath"] = v
 				raw["basePath"] = v
+			}
+		}
+
+		// Keep explorer.autoReveal / explorer.autoRelveal in sync
+		if k == "explorer.autoReveal" || k == "explorer.autoRelveal" || k == "autoReveal" || k == "autoRelveal" {
+			if v == nil {
+				delete(raw, "explorer.autoReveal")
+				delete(raw, "explorer.autoRelveal")
+				delete(raw, "autoReveal")
+				delete(raw, "autoRelveal")
+			} else {
+				raw["explorer.autoReveal"] = v
+				raw["explorer.autoRelveal"] = v
 			}
 		}
 	}
